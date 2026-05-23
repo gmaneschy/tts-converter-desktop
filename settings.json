@@ -1,0 +1,21 @@
+{
+  "rvc_env_path": "",
+  "engine": "supertonic",
+  "kokoro_voice": "af_heart",
+  "kokoro_lang": "en-us",
+  "kokoro_speed": 1.0,
+  "supertonic_voice": "M5",
+  "supertonic_lang": "en",
+  "supertonic_speed": 1.0,
+  "supertonic_total_steps": 10,
+  "rvc_enabled": false,
+  "rvc_model_path": "",
+  "rvc_index_path": "",
+  "rvc_pitch_shift": 0,
+  "rvc_f0_method": "rmvpe+",
+  "rvc_index_rate": 0.66,
+  "rvc_protect": 0.33,
+  "rvc_only_cpu": false,
+  "last_style": "neutral",
+  "last_save_dir": ""
+}

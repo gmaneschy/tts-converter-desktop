@@ -1,0 +1,7 @@
+torch
+sounddevice
+supertonic
+kokoro-onnx
+numpy
+misaki
+pyside6
