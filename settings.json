@@ -1,8 +1,8 @@
 {
   "rvc_env_path": "",
-  "engine": "supertonic",
-  "kokoro_voice": "af_heart",
-  "kokoro_lang": "en-us",
+  "engine": "kokoro",
+  "kokoro_voice": "af_maple",
+  "kokoro_lang": "zh",
   "kokoro_speed": 1.0,
   "supertonic_voice": "M5",
   "supertonic_lang": "en",
@@ -17,5 +17,5 @@
   "rvc_protect": 0.33,
   "rvc_only_cpu": false,
   "last_style": "neutral",
-  "last_save_dir": ""
+  "last_save_dir": "C:\\Users\\Gabriel\\Desktop"
 }

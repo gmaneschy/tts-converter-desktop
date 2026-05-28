@@ -295,15 +295,46 @@ def _extract_phonemes(result) -> str | None:
     return str(phonemes)
 
 
-def _misaki_phonemize(text: str, lang_code: str) -> tuple[str, bool]:
+_KOKORO_MAX_PHONEMES = 500  # limite real é 510; margem de 10 para segurança
+
+
+def _split_phonemes(phonemes: str, max_len: int = _KOKORO_MAX_PHONEMES) -> list[str]:
+    """
+    Parte uma string de fonemas em chunks de até `max_len` caracteres,
+    quebrando preferencialmente em espaços (fronteiras de sílaba/palavra).
+    Retorna lista com 1+ chunks, nunca vazia.
+    """
+    if len(phonemes) <= max_len:
+        return [phonemes]
+
+    chunks: list[str] = []
+    while len(phonemes) > max_len:
+        cut = phonemes.rfind(" ", 0, max_len)
+        if cut == -1:
+            cut = max_len  # sem espaço: corte forçado
+        chunks.append(phonemes[:cut])
+        phonemes = phonemes[cut:].lstrip(" ")
+    if phonemes:
+        chunks.append(phonemes)
+    return chunks
+
+
+def _misaki_phonemize(text: str, lang_code: str) -> tuple[str, bool, str]:
     """
     zh/ja → misaki G2P (is_phonemes=True).
     Demais → kokoro_onnx.Tokenizer.phonemize (is_phonemes=True).
-    Fallback de emergência: (text, False).
+    Fallback de emergência: (text, False, "a").
+
+    Retorna (text_ou_fonemas, is_phonemes, lang_efetivo).
+    lang_efetivo pode diferir de lang_code quando o misaki falha e o caller
+    precisa usar espeak — nesse caso retornamos "a" (en-us) em vez de "z"/"j"
+    para evitar o erro "no support for lang z/j" no espeak interno do Kokoro.
     """
     global _G2P_CACHE
 
     # ── zh ────────────────────────────────────────────────────────────────
+    # Correção: O chinês PRECISA ser pré-processado pelo misaki[zh]
+    # para gerar os fonemas IPA corretos antes de ir para o ONNX.
     if lang_code == "z":
         try:
             with _G2P_CACHE_LOCK:
@@ -313,11 +344,12 @@ def _misaki_phonemize(text: str, lang_code: str) -> tuple[str, bool]:
                 g2p = _G2P_CACHE["zh"]
             phonemes = _extract_phonemes(g2p(text))
             if phonemes:
-                return phonemes, True
-            print("⚠️ misaki[zh] retornou vazio → fallback texto bruto")
+                return phonemes, True, "z"
+            print("⚠️ misaki[zh] retornou vazio → fallback texto bruto (lang=a)")
         except Exception as e:
-            print(f"⚠️ misaki[zh] falhou → fallback texto bruto: {e}")
-        return text, False
+            print(f"⚠️ misaki[zh] falhou → fallback texto bruto (lang=a): {e}")
+        # Fallback: se falhar, lang "z" explode no espeak nativo, redirecionamos para "a"
+        return text, False, "a"
 
     # ── ja ────────────────────────────────────────────────────────────────
     if lang_code == "j":
@@ -329,17 +361,18 @@ def _misaki_phonemize(text: str, lang_code: str) -> tuple[str, bool]:
                 g2p = _G2P_CACHE["ja"]
             phonemes = _extract_phonemes(g2p(text))
             if phonemes:
-                return phonemes, True
-            print("⚠️ misaki[ja] retornou vazio → fallback texto bruto")
+                return phonemes, True, "j"
+            print("⚠️ misaki[ja] retornou vazio → fallback texto bruto (lang=a)")
         except Exception as e:
-            print(f"⚠️ misaki[ja] falhou → fallback texto bruto: {e}")
-        return text, False
+            print(f"⚠️ misaki[ja] falhou → fallback texto bruto (lang=a): {e}")
+        # Fallback: lang "j" não tem suporte no espeak interno → usar "a"
+        return text, False, "a"
 
     # ── todos os demais → kokoro_onnx.Tokenizer ───────────────────────────
     tokenizer_lang = _KOKORO_TOKENIZER_LANG.get(lang_code)
     if not tokenizer_lang:
-        print(f"⚠️ lang_code '{lang_code}' sem mapeamento → fallback texto bruto")
-        return text, False
+        print(f"⚠️ lang_code '{lang_code}' sem mapeamento → fallback texto bruto (lang=a)")
+        return text, False, "a"
 
     try:
         with _G2P_CACHE_LOCK:
@@ -349,11 +382,11 @@ def _misaki_phonemize(text: str, lang_code: str) -> tuple[str, bool]:
             tokenizer = _G2P_CACHE["tokenizer"]
         phonemes = tokenizer.phonemize(text, tokenizer_lang)
         if phonemes and phonemes.strip():
-            return phonemes, True
+            return phonemes, True, lang_code
         print(f"⚠️ Tokenizer lang={tokenizer_lang} retornou vazio → fallback texto bruto")
     except Exception as e:
         print(f"⚠️ Tokenizer lang={tokenizer_lang} falhou → fallback texto bruto: {e}")
-    return text, False
+    return text, False, lang_code
 
 class KokoroTTSEngine:
     def __init__(
@@ -365,6 +398,8 @@ class KokoroTTSEngine:
         speed: float,
         sample_rate: int,
         rvc: "RVCConverter | None" = None,
+        zh_model_path: str | None = None,
+        zh_voices_path: str | None = None,
     ):
         print("🔊 Carregando Kokoro TTS (ONNX Multivozes)...")
         start = time.perf_counter()
@@ -373,6 +408,32 @@ class KokoroTTSEngine:
             model_path=model_path,
             voices_path=voices_path,
         )
+
+        # Instância separada para o modelo chinês (Kokoro-82M-v1.1-zh-ONNX).
+        # Usa diretório de vozes individuais (.bin por voz) em vez do voices-v1.0.bin.
+        # Só é criada se os caminhos forem fornecidos.
+        self.kokoro_zh: "Kokoro | None" = None
+        self._zh_voices_dir: str | None = None
+
+        if zh_model_path and zh_voices_path:
+            try:
+                print("🔊 Carregando Kokoro ZH (onnx-community/Kokoro-82M-v1.1-zh-ONNX)...")
+                import os
+
+                # Kokoro-ONNX tenta fazer open() no path. Se for diretório, dá PermissionError.
+                # Portanto, injetamos o arquivo padrão (inglês) só pro init não quebrar.
+                is_dir = os.path.isdir(zh_voices_path)
+                safe_voices_path = voices_path if is_dir else zh_voices_path
+
+                self.kokoro_zh = Kokoro(
+                    model_path=zh_model_path,
+                    voices_path=safe_voices_path,
+                )
+
+
+                print("✅ Kokoro ZH carregado")
+            except Exception as e:
+                print(f"⚠️ Falha ao carregar Kokoro ZH: {e} — síntese zh indisponível.")
 
         self.voice = voice
         self.lang = _resolve_kokoro_lang(lang)
@@ -399,15 +460,51 @@ class KokoroTTSEngine:
 
         print("🔥 Warm-up Kokoro...")
         try:
-            _warmup_text, _warmup_is_phonemes = _misaki_phonemize("teste", self.lang)
-            self.kokoro.create(
-                _warmup_text,
-                voice=self.voice,
-                speed=self.speed,
-                lang=self.lang,
-                is_phonemes=_warmup_is_phonemes,
-            )
-            print("✅ Warm-up concluído")
+            # Fonemas IPA hardcoded por lang — curtos, sem passar pelo G2P,
+            # garantindo que nunca ultrapassem o limite de 510 fonemas do Kokoro.
+            _WARMUP_PHONEMES: dict[str, str] = {
+                "j": "koɴnichiwa",
+                "k": "annjʌŋhasejo",
+                "h": "nəməste",
+            }
+            if self.lang == "z":
+                if self.kokoro_zh is not None:
+                    self._get_kokoro_for_lang("z", self.voice)
+                    try:
+                        # Correção: Pré-processa o texto chinês usando misaki[zh] para o warm-up
+                        _warmup_text, _warmup_is_phonemes, _warmup_lang = _misaki_phonemize("你好", "z")
+                        self.kokoro_zh.create(
+                            _warmup_text,
+                            voice=self.voice,
+                            speed=self.speed,
+                            lang=_warmup_lang,
+                            is_phonemes=_warmup_is_phonemes,
+                        )
+                        print("✅ Warm-up Kokoro ZH concluído")
+                    except Exception as e:
+                        print(f"⚠️ Warm-up ZH falhou: {e}")
+            elif self.lang in _WARMUP_PHONEMES:
+                _warmup_text = _WARMUP_PHONEMES[self.lang]
+                _warmup_is_phonemes = True
+                _warmup_lang = self.lang
+                self.kokoro.create(
+                    _warmup_text,
+                    voice=self.voice,
+                    speed=self.speed,
+                    lang=_warmup_lang,
+                    is_phonemes=_warmup_is_phonemes,
+                )
+                print("✅ Warm-up concluído")
+            else:
+                _warmup_text, _warmup_is_phonemes, _warmup_lang = _misaki_phonemize("hello", self.lang)
+                self.kokoro.create(
+                    _warmup_text,
+                    voice=self.voice,
+                    speed=self.speed,
+                    lang=_warmup_lang,
+                    is_phonemes=_warmup_is_phonemes,
+                )
+                print("✅ Warm-up concluído")
         except Exception as e:
             print(f"⚠️ Warm-up falhou: {e}")
         self.rvc = rvc
@@ -428,38 +525,55 @@ class KokoroTTSEngine:
     async def _speak_streaming(self, text: str, speed: float, voice: str, lang: str):
         """
         Produtor-consumidor real via asyncio.Queue.
-
-        O produtor envia chunks do kokoro.create_stream() para a fila;
-        o consumidor (thread de áudio) abre o OutputStream e escreve cada
-        chunk assim que chega, reduzindo a latência percebida: o playback
-        começa após o primeiro chunk, enquanto os demais ainda estão sendo
-        sintetizados.
-
-        Sentinela: None encerrar a fila sinaliza EOF ao consumidor.
-
-        Se RVC estiver ativo, ele é aplicado por chunk (streaming) ou no
-        áudio completo dependendo do que o converter suportar; aqui optamos
-        por aplicar no array final (concatenado pelo consumidor) para manter
-        consistência de pitch — isso é aceitável porque RVC já é o gargalo.
         """
-        text, is_phonemes = _misaki_phonemize(text, lang)
+        text, is_phonemes, lang = _misaki_phonemize(text, lang)
         if not text or not text.strip():
             print("⚠️ _misaki_phonemize retornou texto vazio — abortando síntese")
             return
 
+        # Parte sequências de fonemas longas em sub-chunks para respeitar o
+        # limite de 510 fonemas do Kokoro. Para texto bruto (is_phonemes=False)
+        # o Kokoro já lida internamente, então aplicamos só quando is_phonemes=True.
+        phoneme_chunks = _split_phonemes(text) if is_phonemes else [text]
+        # Sub-particionamento de segurança para o chinês v1.1 (Evita sobrecarga e anomalias de áudio)
+        if lang == "z" and is_phonemes:
+            zh_optimized_chunks = []
+            for chunk in phoneme_chunks:
+                # Se o chunk de fonemas for muito longo, quebra preventivamente por espaços simples
+                if len(chunk) > 200:
+                    words = chunk.split(" ")
+                    current_chunk = []
+                    current_len = 0
+                    for word in words:
+                        if current_len + len(word) + 1 > 200:
+                            zh_optimized_chunks.append(" ".join(current_chunk))
+                            current_chunk = [word]
+                            current_len = len(word)
+                        else:
+                            current_chunk.append(word)
+                            current_len += len(word) + 1
+                    if current_chunk:
+                        zh_optimized_chunks.append(" ".join(current_chunk))
+                else:
+                    zh_optimized_chunks.append(chunk)
+            phoneme_chunks = zh_optimized_chunks
+
         queue: asyncio.Queue = asyncio.Queue(maxsize=4)
 
         # ── Produtor ─────────────────────────────────────────────────────
+        _kokoro_instance = self._get_kokoro_for_lang(lang, voice)
+
         async def _producer():
             try:
-                async for chunk, sample_rate in self.kokoro.create_stream(
-                    text,
-                    voice=voice,
-                    speed=speed,
-                    lang=lang,
-                    is_phonemes=is_phonemes,
-                ):
-                    await queue.put((np.asarray(chunk, dtype=np.float32).flatten(), sample_rate))
+                for ph_chunk in phoneme_chunks:
+                    async for chunk, sample_rate in _kokoro_instance.create_stream(
+                        ph_chunk,
+                        voice=voice,
+                        speed=speed,
+                        lang=lang,
+                        is_phonemes=is_phonemes,
+                    ):
+                        await queue.put((np.asarray(chunk, dtype=np.float32).flatten(), sample_rate))
             except Exception as e:
                 print(f"❌ Erro durante streaming TTS: {e}")
             finally:
@@ -467,14 +581,10 @@ class KokoroTTSEngine:
 
         # ── Consumidor ───────────────────────────────────────────────────
         async def _consumer():
-            # Espera o primeiro chunk antes de abrir o OutputStream para
-            # evitar latência de abertura de device sem áudio disponível.
             first = await queue.get()
             if first is None:
                 return
 
-            # Se RVC está ativo, acumulamos para processar em bloco (RVC
-            # precisa de contexto contíguo para pitch tracking correto).
             if self.rvc is not None:
                 chunks = [first[0]]
                 sr = first[1]
@@ -493,7 +603,6 @@ class KokoroTTSEngine:
                     stream.write(full_wav.reshape(-1, 1))
                 return
 
-            # Sem RVC: abre stream e escreve cada chunk imediatamente.
             sr = first[1]
             with sd.OutputStream(samplerate=sr, channels=1, dtype="float32") as stream:
                 stream.write(first[0].reshape(-1, 1))
@@ -516,6 +625,66 @@ class KokoroTTSEngine:
         self._base_voice = self.voice
         self._base_lang  = self.lang
         print(f"🎙️ Kokoro voz/lang atualizados: voice={voice} lang={self.lang}")
+
+    def _get_kokoro_for_lang(self, lang: str, voice: str = "") -> "Kokoro":
+        if lang == "z" and self.kokoro_zh is not None:
+            # Se o dicionário de vozes do modelo chinês ainda não foi adaptado
+            # e o arquivo consolidado de vozes existe:
+            if not getattr(self, "_zh_voices_patched", False) and self._zh_voices_dir:
+                import os
+                if os.path.exists(self._zh_voices_dir) and os.path.isfile(self._zh_voices_dir):
+                    try:
+                        print(f"⚙️ Adaptando vozes do arquivo unificado ZH: {self._zh_voices_dir}")
+
+                        # Força o recarregamento correto das vozes se o dicionário estiver vazio
+                        if not self.kokoro_zh.voices:
+                            # kokoro-onnx armazena as vozes internamente usando np.load ou estrutura similar
+                            # Vamos garantir que ele leia do arquivo unificado
+                            import numpy as np
+                            # Se for um arquivo .bin unificado do kokoro-onnx, ele normalmente é um dicionário serializado (.npz)
+                            try:
+                                loaded_voices = np.load(self._zh_voices_dir, allow_pickle=True)
+                                self.kokoro_zh.voices = dict(loaded_voices)
+                            except Exception:
+                                # Fallback seguro usando a API nativa se disponível
+                                pass
+
+                        # Se conseguiu popular o dicionário de vozes, aplica o hotfix de dimensões
+                        if self.kokoro_zh.voices:
+                            for name in list(self.kokoro_zh.voices.keys()):
+                                v = self.kokoro_zh.voices[name]
+
+                                # 1. Correção Crítica (512 -> 256): Fatiamento do vetor de estilo
+                                if v.shape[-1] == 512:
+                                    v = v[..., :256]
+
+                                # 2. Padding vertical para evitar IndexError (linhas de 255 -> 511)
+                                target_rows = 511
+                                # Se a matriz for 2D, expande para 3D (target_rows, 1, 256)
+                                if len(v.shape) == 2:
+                                    matrix = v.reshape(-1, 256)
+                                else:
+                                    matrix = v.reshape(-1, 256)
+
+                                if matrix.shape[0] < target_rows:
+                                    padding_rows = target_rows - matrix.shape[0]
+                                    last_row = matrix[-1:]
+                                    padding = np.repeat(last_row, padding_rows, axis=0)
+                                    matrix = np.vstack([matrix, padding])
+                                elif matrix.shape[0] > target_rows:
+                                    matrix = matrix[:target_rows]
+
+                                # Salva de volta no formato 3D esperado pelo Kokoro-ONNX
+                                self.kokoro_zh.voices[name] = matrix.reshape(target_rows, 1, 256)
+
+                            self._zh_voices_patched = True
+                            print("✅ Todas as vozes ZH unificadas foram adaptadas com sucesso para 256 dimensões.")
+                    except Exception as patch_err:
+                        print(f"⚠️ Erro ao aplicar patch no arquivo unificado ZH: {patch_err}")
+
+            return self.kokoro_zh
+
+        return self.kokoro
 
     def speak_with_style(self, text: str, style: str) -> float:
         if not text.strip():
@@ -571,18 +740,44 @@ class KokoroTTSEngine:
     ) -> tuple[list, int]:
         chunks, sr = [], self.sample_rate
 
-        text, is_phonemes = _misaki_phonemize(text, lang)
+        text, is_phonemes, lang = _misaki_phonemize(text, lang)
         if not text or not text.strip():
             print("⚠️ _misaki_phonemize retornou texto vazio — retornando sem áudio")
             return chunks, sr
 
-        async for chunk, sample_rate in self.kokoro.create_stream(
-                text,
-                voice=voice,
-                speed=speed,
-                lang=lang,
-                is_phonemes=is_phonemes,
-        ):
-            chunks.append(np.asarray(chunk, dtype=np.float32).flatten())
-            sr = sample_rate
+        phoneme_chunks = _split_phonemes(text) if is_phonemes else [text]
+        # Sub-particionamento de segurança para o chinês v1.1 (Evita sobrecarga e anomalias de áudio)
+        if lang == "z" and is_phonemes:
+            zh_optimized_chunks = []
+            for chunk in phoneme_chunks:
+                # Se o chunk de fonemas for muito longo, quebra preventivamente por espaços simples
+                if len(chunk) > 200:
+                    words = chunk.split(" ")
+                    current_chunk = []
+                    current_len = 0
+                    for word in words:
+                        if current_len + len(word) + 1 > 200:
+                            zh_optimized_chunks.append(" ".join(current_chunk))
+                            current_chunk = [word]
+                            current_len = len(word)
+                        else:
+                            current_chunk.append(word)
+                            current_len += len(word) + 1
+                    if current_chunk:
+                        zh_optimized_chunks.append(" ".join(current_chunk))
+                else:
+                    zh_optimized_chunks.append(chunk)
+            phoneme_chunks = zh_optimized_chunks
+
+        _kokoro_instance = self._get_kokoro_for_lang(lang, voice)
+        for ph_chunk in phoneme_chunks:
+            async for chunk, sample_rate in _kokoro_instance.create_stream(
+                    ph_chunk,
+                    voice=voice,
+                    speed=speed,
+                    lang=lang,
+                    is_phonemes=is_phonemes,
+            ):
+                chunks.append(np.asarray(chunk, dtype=np.float32).flatten())
+                sr = sample_rate
         return chunks, sr

@@ -2,6 +2,10 @@ torch
 sounddevice
 supertonic
 kokoro-onnx
+misaki[zh]
+pypinyin
+ordered_set
+jieba
+cn2an
 numpy
-misaki
 pyside6

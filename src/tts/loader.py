@@ -125,10 +125,19 @@ class KokoroTTSLoader:
             speed: float = 1.0,
             sample_rate: int = 24000,
             rvc: "RVCConverter | None" = None,
+            zh_model_path: str | None = None,
+            zh_voices_path: str | None = None
     ):
+        from src.utils.paths import kokoro_zh_model_path, kokoro_zh_voices_path
+
         _kokoro_dir = kokoro_dir()
         resolved_model = model_path or str(_kokoro_dir / "kokoro-v0_19.onnx")
         resolved_voices = voices_path or str(_kokoro_dir / "voices-v1.0.bin")
+
+        # Defaults automáticos para o modelo chinês. São usados apenas se os
+        # arquivos existirem — o engine trata a ausência graciosamente.
+        _zh_model  = zh_model_path  or str(kokoro_zh_model_path())
+        _zh_voices = zh_voices_path or str(kokoro_zh_voices_path())
 
         self.engine = KokoroTTSEngine(
             model_path=resolved_model,
@@ -138,6 +147,8 @@ class KokoroTTSLoader:
             speed=speed,
             sample_rate=sample_rate,
             rvc=rvc,
+            zh_model_path=_zh_model,
+            zh_voices_path=_zh_voices,
         )
 
     def set_voice_and_lang(self, voice: str, lang: str) -> None:

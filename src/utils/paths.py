@@ -32,6 +32,16 @@ def supertonic_dir() -> Path:
 def kokoro_dir() -> Path:
     return models_dir() / "tts" / "kokoro"
 
+def kokoro_zh_dir() -> Path:
+    """Diretório base do modelo Kokoro Chinês."""
+    return models_dir() / "tts" / "kokoro-zh"
+
+def kokoro_zh_model_path() -> Path:
+    return kokoro_zh_dir() / "kokoro-v1.1-zh.onnx"
+
+def kokoro_zh_voices_path() -> Path:
+    return kokoro_zh_dir() / "voices-v1.1-zh.bin"
+
 def resource_path(relative: str) -> Path:
     """Resolve um caminho dentro do bundle (_MEIPASS) ou do projeto em dev."""
     if getattr(sys, "frozen", False):
