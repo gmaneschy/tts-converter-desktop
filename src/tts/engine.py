@@ -60,6 +60,7 @@ class SupertonicTTSEngine:
 
         self.tts = TTS(
             model=model,
+            model_dir=supertonic_dir(),
             auto_download=True,
             intra_op_num_threads=intra_threads,
             inter_op_num_threads=inter_threads,

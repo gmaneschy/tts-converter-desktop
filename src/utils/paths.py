@@ -26,7 +26,14 @@ def models_dir() -> Path:
 
 
 def supertonic_dir() -> Path:
-    return models_dir() / "tts" / "supertonic"
+    """Diretório do modelo Supertonic dentro do projeto.
+    Criado automaticamente se não existir, para garantir que o
+    download (via TTS(model_dir=supertonic_dir())) sempre caia aqui
+    e nunca no cache padrão do usuário (~/.cache/supertonic3).
+    """
+    d = models_dir() / "tts" / "supertonic"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def kokoro_dir() -> Path:

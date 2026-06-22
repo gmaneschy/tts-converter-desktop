@@ -1,6 +1,6 @@
 {
   "rvc_env_path": "",
-  "engine": "kokoro",
+  "engine": "supertonic",
   "kokoro_voice": "af_maple",
   "kokoro_lang": "zh",
   "kokoro_speed": 1.0,

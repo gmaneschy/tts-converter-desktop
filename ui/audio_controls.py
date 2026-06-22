@@ -71,26 +71,31 @@ class _WaveformWidget(QWidget):
 
         p.fillRect(0, 0, w, h, self._bg)
 
-        if self._samples is None:
+        if self._samples is None or len(self._samples) == 0:
             # Linha de referência vazia
             p.setPen(QPen(self._accent_lo, 1))
             p.drawLine(0, mid, w, mid)
             return
 
         n = len(self._samples)
-        bar_w = max(1, w // n)
-        step  = max(1, n // w)
-        x = 0
-        for i in range(0, n, step):
+        # Largura de cada barra em ponto flutuante: a soma das n barras
+        # preenche exatamente "w" pixels. Antes, bar_w era inteiro
+        # (w // n) e o avanço de x parava antes da borda direita
+        # sempre que w não fosse múltiplo de n — a onda ficava
+        # "encolhida" enquanto a linha de playhead (px = frac * w) ia
+        # até o fim real do widget. Resultado: a barrinha de progresso
+        # destacava a onda já tocada fora do ritmo do áudio.
+        bar_w = w / n
+
+        for i in range(n):
             amp = abs(float(self._samples[i]))
             bar_h = int(amp * mid * 0.9)
             frac = i / n
             color = self._accent if frac <= self._playhead else self._accent_lo
-            p.setPen(QPen(color, bar_w))
-            p.drawLine(x, mid - bar_h, x, mid + bar_h)
-            x += bar_w
-            if x >= w:
-                break
+            x_center = int((i + 0.5) * bar_w)
+            pen_w = max(1, round(bar_w))
+            p.setPen(QPen(color, pen_w))
+            p.drawLine(x_center, mid - bar_h, x_center, mid + bar_h)
 
         # playhead line
         if self._playhead > 0:
