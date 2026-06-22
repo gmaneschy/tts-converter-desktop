@@ -6,7 +6,7 @@ TTS Converter is a desktop tool for local speech synthesis using the Supertonic 
 TTS Converter é uma ferramenta desktop para síntese de voz local com os engines Supertonic e Kokoro-ONNX, com suporte opcional a conversão de voz via RVC. O processamento RVC roda em um ambiente Python isolado configurado pelo usuário, mantendo as dependências pesadas do RVC separadas da aplicação principal. Portanto, para usar o RVC, você pode querer baixar o arquivo rvc_env.zip, que contém todas as dependências do infer_rvc_python.
 
 Download Link (app):
-https://huggingface.co/gabrielmaneschy/tts-converter-desktop/resolve/main/TTSConverter.zip?download=true
+[https://huggingface.co/gabrielmaneschy/tts-converter-desktop/resolve/main/TTSConverter.zip?download=true](https://huggingface.co/gabrielmaneschy/tts-converter-desktop/resolve/main/TTSConverter.zip?download=true)
 
 Download Link (rvc_env):
-https://huggingface.co/gabrielmaneschy/tts-converter-desktop/resolve/main/rvc_env.zip?download=true
+[https://huggingface.co/gabrielmaneschy/tts-converter-desktop/resolve/main/rvc_env.zip?download=true](https://huggingface.co/gabrielmaneschy/tts-converter-desktop/resolve/main/rvc_env.zip?download=true)
